@@ -5,12 +5,13 @@ use binrw::BinReaderExt;
 use squish::Format as SFormat;
 
 pub trait Dds {
-	fn read<T>(reader: &mut T) -> Self where T: Read + Seek;
-	fn write<T>(&self, writer: &mut T) where T: Write + Seek;
+	fn read<T>(reader: &mut T) -> Result<Self, crate::Error> where Self: Sized, T: Read + Seek;
+	fn write<T>(&self, writer: &mut T) -> Result<(), crate::Error> where T: Write + Seek;
 }
 
 // https://docs.microsoft.com/en-us/windows/win32/direct3ddds/dx-graphics-dds-pguide
 // b g r a
+// we map everything to be r g b a
 // ---------------------------------------- //
 
 #[derive(Copy, Clone)]
@@ -31,13 +32,14 @@ pub enum Format {
 }
 
 impl Format {
-	pub fn convert_from(&self, width: usize, height: usize, data: &[u8]) -> Option<Vec<u8>> {
+	pub fn convert_from(&self, width: usize, height: usize, data: &[u8]) -> Option<Vec<u8>> { // -> r, g, b, a
 		match self {
 			Format::L8       => Some(convert_from_l8(data)),
 			Format::A8       => Some(convert_from_a8(data)),
 			Format::A4R4G4B4 => Some(convert_from_a4r4g4b4(data)),
 			Format::A1R5G5B5 => Some(convert_from_a1r5g5b5(data)),
-			Format::A8R8G8B8 => Some(Vec::from(data)),
+			// Format::A8R8G8B8 => Some(Vec::from(data)),
+			Format::A8R8G8B8 => Some(convert_from_a8r8g8b8(data)),
 			Format::X8R8G8B8 => Some(convert_from_x8r8g8b8(data)),
 			Format::Bc1      => Some(convert_from_compressed(SFormat::Bc1, width, height, data)),
 			Format::Bc2      => Some(convert_from_compressed(SFormat::Bc2, width, height, data)),
@@ -53,7 +55,8 @@ impl Format {
 			Format::A8       => Some(convert_to_a8(data)),
 			Format::A4R4G4B4 => Some(convert_to_a4r4g4b4(data)),
 			Format::A1R5G5B5 => Some(convert_to_a1r5g5b5(data)),
-			Format::A8R8G8B8 => Some(Vec::from(data)),
+			// Format::A8R8G8B8 => Some(Vec::from(data)),
+			Format::A8R8G8B8 => Some(convert_to_a8r8g8b8(data)),
 			Format::X8R8G8B8 => Some(convert_to_x8r8g8b8(data)),
 			Format::Bc1      => Some(convert_to_compressed(SFormat::Bc1, width, height, data)),
 			Format::Bc2      => Some(convert_to_compressed(SFormat::Bc2, width, height, data)),
@@ -185,9 +188,14 @@ fn convert_from_a4r4g4b4(data: &[u8]) -> Vec<u8> {
 		.flat_map(|p| {
 			let v = ((p[1] as u16) << 8) + p[0] as u16;
 			[
-				((v & 0x000F) << 4) as u8,
-				((v & 0x00F0)     ) as u8,
+				// ((v & 0x000F) << 4) as u8,
+				// ((v & 0x00F0)     ) as u8,
+				// ((v & 0x0F00) >> 4) as u8,
+				// ((v & 0xF000) >> 8) as u8,
+				
 				((v & 0x0F00) >> 4) as u8,
+				((v & 0x00F0)     ) as u8,
+				((v & 0x000F) << 4) as u8,
 				((v & 0xF000) >> 8) as u8,
 			]
 		}).collect::<Vec<u8>>()
@@ -198,8 +206,11 @@ fn convert_to_a4r4g4b4(data: &[u8]) -> Vec<u8> {
 		.chunks_exact(4)
 		.flat_map(|p| {
 			[
-				(p[0] >> 4) + (p[1] & 0xF0),
-				(p[2] >> 4) + (p[3] & 0xF0),
+				// (p[0] >> 4) + (p[1] & 0xF0),
+				// (p[2] >> 4) + (p[3] & 0xF0),
+				
+				(p[2] >> 4) + (p[1] & 0xF0),
+				(p[0] >> 4) + (p[3] & 0xF0),
 			]
 		}).collect::<Vec<u8>>()
 }
@@ -212,9 +223,14 @@ fn convert_from_a1r5g5b5(data: &[u8]) -> Vec<u8> {
 		.flat_map(|p| {
 			let v = ((p[1] as u16) << 8) + p[0] as u16;
 			[
-				((v & 0x001F) << 3) as u8,
-				((v & 0x03E0) >> 2) as u8,
+				// ((v & 0x001F) << 3) as u8,
+				// ((v & 0x03E0) >> 2) as u8,
+				// ((v & 0x7C00) >> 7) as u8,
+				// ((v & 0x8000) >> 8) as u8,
+				
 				((v & 0x7C00) >> 7) as u8,
+				((v & 0x03E0) >> 2) as u8,
+				((v & 0x001F) << 3) as u8,
 				((v & 0x8000) >> 8) as u8,
 			]
 		}).collect::<Vec<u8>>()
@@ -225,9 +241,30 @@ fn convert_to_a1r5g5b5(data: &[u8]) -> Vec<u8> {
 		.chunks_exact(4)
 		.flat_map(|p| {
 			[
-				(p[0] >> 3) + ((p[1] << 2) & 0xE0),
-				(p[1] >> 6) + ((p[2] >> 1) & 0x7C) + p[3] & 0x80,
+				// (p[0] >> 3) + ((p[1] << 2) & 0xE0),
+				// (p[1] >> 6) + ((p[2] >> 1) & 0x7C) + p[3] & 0x80,
+				
+				(p[2] >> 3) + ((p[1] << 2) & 0xE0),
+				(p[1] >> 6) + ((p[0] >> 1) & 0x7C) + p[3] & 0x80,
 			]
+		}).collect::<Vec<u8>>()
+}
+
+// ---------------------------------------- //
+
+fn convert_from_a8r8g8b8(data: &[u8]) -> Vec<u8> {
+	data
+		.chunks_exact(4)
+		.flat_map(|p| {
+			[p[2], p[1], p[0], p[3]]
+		}).collect::<Vec<u8>>()
+}
+
+fn convert_to_a8r8g8b8(data: &[u8]) -> Vec<u8> {
+	data
+		.chunks_exact(4)
+		.flat_map(|p| {
+			[p[2], p[1], p[0], p[3]]
 		}).collect::<Vec<u8>>()
 }
 
@@ -237,7 +274,8 @@ fn convert_from_x8r8g8b8(data: &[u8]) -> Vec<u8> {
 	data
 		.chunks_exact(4)
 		.flat_map(|p| {
-			[p[0], p[1], p[2], 255]
+			// [p[0], p[1], p[2], 255]
+			[p[2], p[1], p[0], 255]
 		}).collect::<Vec<u8>>()
 }
 
@@ -245,7 +283,8 @@ fn convert_to_x8r8g8b8(data: &[u8]) -> Vec<u8> {
 	data
 		.chunks_exact(4)
 		.flat_map(|p| {
-			[p[0], p[1], p[2], 0]
+			// [p[0], p[1], p[2], 0]
+			[p[2], p[1], p[0], 0]
 		}).collect::<Vec<u8>>()
 }
 
@@ -259,17 +298,18 @@ fn convert_from_compressed(format: SFormat, width: usize, height: usize, data: &
 	
 	let mut output = vec![0u8; width * height * 4];
 	format.decompress(data, width, height, &mut output);
-	output.chunks_exact(4)
-		.flat_map(|p| {
-			[p[2], p[1], p[0], p[3]]
-		}).collect::<Vec<u8>>()
+	// output.chunks_exact(4)
+	// 	.flat_map(|p| {
+	// 		[p[2], p[1], p[0], p[3]]
+	// 	}).collect::<Vec<u8>>()
+	output
 }
 
 fn convert_to_compressed(format: SFormat, width: usize, height: usize, data: &[u8]) -> Vec<u8> {
-	let data = data.chunks_exact(4)
-		.flat_map(|p| {
-			[p[2], p[1], p[0], p[3]]
-		}).collect::<Vec<u8>>();
+	// let data = data.chunks_exact(4)
+	// 	.flat_map(|p| {
+	// 		[p[2], p[1], p[0], p[3]]
+	// 	}).collect::<Vec<u8>>();
 	let mut output = vec![0u8; format.compressed_size(width, height)];
 	format.compress(&data, width, height, squish::Params {
 		algorithm: squish::Algorithm::IterativeClusterFit,

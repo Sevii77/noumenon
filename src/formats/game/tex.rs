@@ -3,7 +3,7 @@
 use std::{io::{Cursor, Read, Seek, Write, SeekFrom, BufReader}, borrow::Cow};
 use binrw::{BinRead, BinReaderExt, BinWrite, binrw};
 use image::{codecs::{png::PngEncoder, tiff::TiffEncoder}, ImageEncoder, ColorType};
-use crate::formats::{game::Result, external::{dds::{Dds, Format as DFormat}, png::Png, tiff::Tiff}};
+use crate::{Error, formats::external::{dds::{Dds, Format as DFormat}, png::Png, tiff::Tiff}};
 
 #[repr(C)]
 pub struct Pixel {
@@ -90,6 +90,7 @@ impl From<DFormat> for Format {
 
 #[binrw]
 #[brw(little)]
+#[derive(Debug, Clone)]
 pub struct Header {
 	pub flags: u32,
 	pub format: Format,
@@ -101,15 +102,22 @@ pub struct Header {
 	pub mip_offsets: [u32; 13],
 }
 
+unsafe impl Send for Header {}
+impl std::panic::UnwindSafe for Header {}
+
+#[derive(Debug, Clone)]
 pub struct Tex {
 	pub header: Header,
 	pub data: Vec<u8>,
 }
 
+unsafe impl Send for Tex {}
+impl std::panic::UnwindSafe for Tex {}
+
 // used to load from spack using ironworks
 impl ironworks::file::File for Tex {
-	fn read<'a>(data: impl Into<Cow<'a, [u8]>>) -> Result<Self> {
-		Ok(Tex::read(&mut Cursor::new(&data.into())))
+	fn read<'a>(data: impl Into<Cow<'a, [u8]>>) -> super::Result<Self> {
+		Ok(Tex::read(&mut Cursor::new(&data.into())).unwrap())
 	}
 }
 
@@ -178,14 +186,15 @@ impl Tex {
 		(w as u16, h as u16, &data[offset..(offset + slicesize)])
 	}
 	
-	pub fn read<T>(reader: &mut T) -> Self where T: Read + Seek {
+	pub fn read<T>(reader: &mut T) -> Result<Self, Error>
+	where T: Read + Seek {
 		// unwrap cuz ? doesn't seem to like it and cba figuring out why or using match
-		let header = <Header as BinRead>::read(reader).unwrap();
+		let header = <Header as BinRead>::read(reader)?;
 		
-		reader.seek(SeekFrom::End(0)).unwrap();
-		let mut data = Vec::with_capacity(reader.stream_position().unwrap() as usize);
-		reader.seek(SeekFrom::Start(80)).unwrap();
-		reader.read_to_end(&mut data).unwrap();
+		reader.seek(SeekFrom::End(0))?;
+		let mut data = Vec::with_capacity(reader.stream_position()? as usize);
+		reader.seek(SeekFrom::Start(80))?;
+		reader.read_to_end(&mut data)?;
 		
 		let format = DFormat::from(header.format.clone());
 		let bitcount = format.bitcount();
@@ -195,31 +204,34 @@ impl Tex {
 			for depth in 0..header.depths.max(1) {
 				let (w, h, data) = Self::slice_manual(mip, depth, &header, bitcount, &data);
 				if w == 0 {break}
-				decompressed.extend(format.convert_from(w as usize, h as usize, data).unwrap());
+				decompressed.extend(format.convert_from(w as usize, h as usize, data).ok_or("invalid format")?);
 			}
 		}
 		
-		Tex {
+		Ok(Tex {
 			data: decompressed,
 			header
-		}
+		})
 	}
 	
-	pub fn write<T>(&self, writer: &mut T) where T: Write + Seek {
-		self.header.write_to(writer).unwrap();
-		writer.write_all(&DFormat::from(self.header.format).convert_to(self.header.width as usize, self.header.height as usize, &self.data).unwrap()).unwrap();
+	pub fn write<T>(&self, writer: &mut T) -> Result<(), Error> where
+	T: Write + Seek {
+		self.header.write_le(writer)?;
+		writer.write_all(&DFormat::from(self.header.format).convert_to(self.header.width as usize, self.header.height as usize, &self.data).ok_or("invalid format")?)?;
+		Ok(())
 	}
 }
 
 impl Dds for Tex {
-	fn read<T>(reader: &mut T) -> Self where T: Read + Seek {
+	fn read<T>(reader: &mut T) -> Result<Self, Error> where
+	T: Read + Seek {
 		// TODO: dont unwrap, return a result
-		reader.seek(SeekFrom::Start(12)).unwrap();
-		let height = reader.read_le::<u32>().unwrap() as u16;
-		let width = reader.read_le::<u32>().unwrap() as u16;
-		reader.seek(SeekFrom::Current(4)).unwrap();
-		let depths = 1.max(reader.read_le::<u32>().unwrap() as u16);
-		let mip_levels = reader.read_le::<u32>().unwrap() as u16;
+		reader.seek(SeekFrom::Start(12))?;
+		let height = reader.read_le::<u32>()? as u16;
+		let width = reader.read_le::<u32>()? as u16;
+		reader.seek(SeekFrom::Current(4))?;
+		let depths = 1.max(reader.read_le::<u32>()? as u16);
+		let mip_levels = reader.read_le::<u32>()? as u16;
 		
 		let format = DFormat::get(reader);
 		
@@ -236,13 +248,13 @@ impl Dds for Tex {
 			mip_offset += ((width as u32 * height as u32 * 4) as f32 * (0.25f32.powi(i as i32))) as u32;
 		}
 		
-		reader.seek(SeekFrom::End(0)).unwrap();
-		let mut data = Vec::with_capacity(reader.stream_position().unwrap() as usize);
-		reader.seek(SeekFrom::Start(128)).unwrap();
-		reader.read_to_end(&mut data).unwrap();
+		reader.seek(SeekFrom::End(0))?;
+		let mut data = Vec::with_capacity(reader.stream_position()? as usize);
+		reader.seek(SeekFrom::Start(128))?;
+		reader.read_to_end(&mut data)?;
 		
-		Tex {
-			data: format.convert_from(width as usize, height as usize, &data).unwrap(),
+		Ok(Tex {
+			data: format.convert_from(width as usize, height as usize, &data).ok_or("invalid format")?,
 			header: Header {
 				flags: 0x00800000, // TODO: care about other stuff like 3d textures
 				format: Format::from(format),
@@ -253,45 +265,48 @@ impl Dds for Tex {
 				lod_offsets: [0, 1, 2],
 				mip_offsets,
 			}
-		}
+		})
 	}
 	
 	// TODO: gotta use those results...
-	fn write<T>(&self, writer: &mut T) where T: Write + Seek {
+	fn write<T>(&self, writer: &mut T) -> Result<(), Error> where
+	T: Write + Seek {
 		let format = DFormat::from(self.header.format);
 		
-		"DDS ".as_bytes().write_to(writer).unwrap();
-		124u32.write_to(writer).unwrap();
-		(format.flags() | if self.header.mip_levels > 1 {0x2000} else {0}).write_to(writer).unwrap();
-		(self.header.height as u32).write_to(writer).unwrap();
-		(self.header.width as u32).write_to(writer).unwrap();
-		0u32.write_to(writer).unwrap(); // most software calculate the pitch itself, so eh fuck it
-		0u32.write_to(writer).unwrap();
-		(self.header.mip_levels as u32).write_to(writer).unwrap();
-		"Noumenon v1".as_bytes().write_to(writer).unwrap(); // combines with the one below should total 44 bytes (reserved)
-		[0u8; 33].write_to(writer).unwrap();
-		32u32.write_to(writer).unwrap();
-		format.flags2().write_to(writer).unwrap();
-		format.fourcc().write_to(writer).unwrap();
-		format.bitcount().write_to(writer).unwrap();
+		"DDS ".as_bytes().write_le(writer)?;
+		124u32.write_le(writer)?;
+		(format.flags() | if self.header.mip_levels > 1 {0x2000} else {0}).write_le(writer)?;
+		(self.header.height as u32).write_le(writer)?;
+		(self.header.width as u32).write_le(writer)?;
+		0u32.write_le(writer)?; // most software calculate the pitch itself, so eh fuck it
+		0u32.write_le(writer)?;
+		(self.header.mip_levels as u32).write_le(writer)?;
+		"Noumenon v1".as_bytes().write_le(writer)?; // combines with the one below should total 44 bytes (reserved)
+		[0u8; 33].write_le(writer)?;
+		32u32.write_le(writer)?;
+		format.flags2().write_le(writer)?;
+		format.fourcc().write_le(writer)?;
+		format.bitcount().write_le(writer)?;
 		let (b, g, r, a) = format.masks();
-		r.write_to(writer).unwrap();
-		g.write_to(writer).unwrap();
-		b.write_to(writer).unwrap();
-		a.write_to(writer).unwrap();
-		0x1000u32.write_to(writer).unwrap(); // TODO: the 2 other flags
-		[0u32; 4].write_to(writer).unwrap();
-		format.convert_to(self.header.width as usize, self.header.height as usize, &self.data).unwrap().write_to(writer).unwrap();
+		r.write_le(writer)?;
+		g.write_le(writer)?;
+		b.write_le(writer)?;
+		a.write_le(writer)?;
+		0x1000u32.write_le(writer)?; // TODO: the 2 other flags
+		[0u32; 4].write_le(writer)?;
+		format.convert_to(self.header.width as usize, self.header.height as usize, &self.data).ok_or("invalid format")?.write_le(writer)?;
+		
+		Ok(())
 	}
 }
 
 impl Png for Tex {
-	fn read<T>(reader: &mut T) -> Self where T: Read + Seek {
+	fn read<T>(reader: &mut T) -> Result<Self, Error> where
+	T: Read + Seek {
 		let img = image::io::Reader::with_format(BufReader::new(reader), image::ImageFormat::Png)
-			.decode()
-			.unwrap();
+			.decode()?;
 		
-		Tex {
+		Ok(Tex {
 			header: Header {
 				flags: 0x00800000,
 				format: Format::A8R8G8B8,
@@ -302,35 +317,39 @@ impl Png for Tex {
 				lod_offsets: [0, 1, 2],
 				mip_offsets: [80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 			},
-			data: img.into_rgba8()
-				.chunks_exact(4)
-				.flat_map(|p| [p[2], p[1], p[0], p[3]])
-				.collect::<Vec<u8>>(),
-		}
+			data: img.into_rgba8().into_vec(),
+			// data: img.into_rgba8()
+			// 	.chunks_exact(4)
+			// 	.flat_map(|p| [p[2], p[1], p[0], p[3]])
+			// 	.collect::<Vec<u8>>(),
+		})
 	}
 	
-	fn write<T>(&self, writer: &mut T) where T: Write + Seek {
+	fn write<T>(&self, writer: &mut T) -> Result<(), Error> where
+	T: Write + Seek {
 		let img = PngEncoder::new(writer);
 		// TODO: possibly convert to a different colortype based on header format, idk
 		img.write_image(
-			&self.data[0..(self.header.width as usize * self.header.height as usize * 4)]
-				.chunks_exact(4)
-				.flat_map(|p| [p[2], p[1], p[0], p[3]])
-				.collect::<Vec<u8>>(),
+			&self.data[0..(self.header.width as usize * self.header.height as usize * 4)],
+				// .chunks_exact(4)
+				// .flat_map(|p| [p[2], p[1], p[0], p[3]])
+				// .collect::<Vec<u8>>(),
 			self.header.width as u32,
 			self.header.height as u32,
 			ColorType::Rgba8
-		).unwrap();
+		)?;
+		
+		Ok(())
 	}
 }
 
 impl Tiff for Tex {
-	fn read<T>(reader: &mut T) -> Self where T: Read + Seek {
+	fn read<T>(reader: &mut T) -> Result<Self, Error> where
+	T: Read + Seek {
 		let img = image::io::Reader::with_format(BufReader::new(reader), image::ImageFormat::Tiff)
-			.decode()
-			.unwrap();
+			.decode()?;
 		
-		Tex {
+		Ok(Tex {
 			header: Header {
 				flags: 0x00800000,
 				format: Format::A8R8G8B8,
@@ -341,24 +360,28 @@ impl Tiff for Tex {
 				lod_offsets: [0, 1, 2],
 				mip_offsets: [80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 			},
-			data: img.into_rgba8()
-				.chunks_exact(4)
-				.flat_map(|p| [p[2], p[1], p[0], p[3]])
-				.collect::<Vec<u8>>(),
-		}
+			data: img.into_rgba8().into_vec(),
+			// data: img.into_rgba8()
+			// 	.chunks_exact(4)
+			// 	.flat_map(|p| [p[2], p[1], p[0], p[3]])
+			// 	.collect::<Vec<u8>>(),
+		})
 	}
 	
-	fn write<T>(&self, writer: &mut T) where T: Write + Seek {
+	fn write<T>(&self, writer: &mut T) -> Result<(), Error> where
+	T: Write + Seek {
 		let img = TiffEncoder::new(writer);
 		// TODO: possibly convert to a different colortype based on header format, idk
 		img.write_image(
-			&self.data[0..(self.header.width as usize * self.header.height as usize * 4)]
-				.chunks_exact(4)
-				.flat_map(|p| [p[2], p[1], p[0], p[3]])
-				.collect::<Vec<u8>>(),
+			&self.data[0..(self.header.width as usize * self.header.height as usize * 4)],
+				// .chunks_exact(4)
+				// .flat_map(|p| [p[2], p[1], p[0], p[3]])
+				// .collect::<Vec<u8>>(),
 			self.header.width as u32,
 			self.header.height as u32,
 			ColorType::Rgba8
-		).unwrap();
+		)?;
+		
+		Ok(())
 	}
 }

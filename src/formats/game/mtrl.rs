@@ -3,7 +3,7 @@
 use std::{borrow::Cow, io::{Cursor, Read, Seek, Write}, collections::BTreeMap};
 use binrw::{binrw, BinRead, BinWrite};
 use half::f16;
-use crate::{formats::game::Result, NullReader};
+use crate::{Error, NullReader, formats::game::Result};
 
 #[derive(Clone, Debug)]
 pub struct ShaderParams {
@@ -977,22 +977,23 @@ pub struct Mtrl {
 
 impl ironworks::file::File for Mtrl {
 	fn read<'a>(data: impl Into<Cow<'a, [u8]>>) -> Result<Self> {
-		Ok(Mtrl::read(&mut Cursor::new(&data.into())))
+		Ok(Mtrl::read(&mut Cursor::new(&data.into())).unwrap())
 	}
 }
 
 impl Mtrl {
-	pub fn read<T>(reader: &mut T) -> Self where T: Read + Seek {
-		let data = <Data as BinRead>::read(reader).unwrap();
+	pub fn read<T>(reader: &mut T) -> Result<Self, Error> where
+	T: Read + Seek {
+		let data = <Data as BinRead>::read(reader)?;
 		
-		Mtrl {
+		Ok(Mtrl {
 			flags: data.flags,
 			uvsets: data.uvsets.into_iter() // TODO: dont assume its in the right order use v.1
-				.map(|v| data.strings[v.0 as usize..].null_terminated().unwrap())
-				.collect(),
+				.map(|v| data.strings[v.0 as usize..].null_terminated())
+				.collect::<Result<Vec<_>, _>>()?,
 			colorsets: data.colorsets.into_iter() // TODO: dont assume its in the right order use v.1
-				.map(|v| data.strings[v.0 as usize..].null_terminated().unwrap())
-				.collect(),
+				.map(|v| data.strings[v.0 as usize..].null_terminated())
+				.collect::<Result<Vec<_>, _>>()?,
 			// unk: data.unk,
 			colorset_rows: if data.colorset_data_size > 0 {
 				let datas: [ColorsetRow; 16] = data.colorset_datas.into_iter().map(|v| ColorsetRow {
@@ -1035,7 +1036,7 @@ impl Mtrl {
 				Some(datas)
 			} else {None},
 			shader: {
-				let mut shader = Shader::new(&data.strings[data.shader_offset as usize..].null_terminated().unwrap()).unwrap();
+				let mut shader = Shader::new(&data.strings[data.shader_offset as usize..].null_terminated()?).ok_or("Invalid shader")?;
 				let inner = shader.inner_mut();
 				
 				for (typ, offset, size) in data.shader_params {
@@ -1055,7 +1056,7 @@ impl Mtrl {
 				for (typ, flags, offset) in data.samplers {
 					inner.samplers.insert(typ, Sampler {
 						enabled: true,
-						path: if offset == 255 {String::new()} else {data.strings[data.textures[offset as usize].0 as usize..].null_terminated().unwrap()},
+						path: if offset == 255 {String::new()} else {data.strings[data.textures[offset as usize].0 as usize..].null_terminated()?},
 						flags: flags,
 					});
 				}
@@ -1066,10 +1067,11 @@ impl Mtrl {
 			},
 			
 			// shader_keys: data.shader_keys,
-		}
+		})
 	}
 	
-	pub fn write<T>(&self, writer: &mut T) where T: Write + Seek {
+	pub fn write<T>(&self, writer: &mut T) -> Result<(), Error> where
+	T: Write + Seek {
 		let mut strings = Vec::<u8>::new();
 		
 		strings.extend(self.shader.shader_name().bytes());
@@ -1100,38 +1102,38 @@ impl Mtrl {
 			strings.push(0);
 		}
 		
-		16973824u32.write_to(writer).unwrap();
-		0u16.write_to(writer).unwrap(); // we go back to write the size after we write everything
-		if self.colorset_rows.is_some() {544u16} else if self.colorset_rows.is_some() {512} else {0}.write_to(writer).unwrap();
-		(strings.len() as u16).write_to(writer).unwrap();
-		0u16.write_to(writer).unwrap();
-		(textures.len() as u8).write_to(writer).unwrap();
-		(uvsets.len() as u8).write_to(writer).unwrap();
-		(colorsets.len() as u8).write_to(writer).unwrap();
-		(self.shader.inner().unk.len() as u8 * 4).write_to(writer).unwrap();
-		textures.write_to(writer).unwrap();
-		uvsets.write_to(writer).unwrap();
-		colorsets.write_to(writer).unwrap();
-		strings.write_to(writer).unwrap();
-		self.shader.inner().unk.write_to(writer).unwrap();
+		16973824u32.write_le(writer)?;
+		0u16.write_le(writer)?; // we go back to write the size after we write everything
+		if self.colorset_rows.is_some() {544u16} else if self.colorset_rows.is_some() {512} else {0}.write_le(writer)?;
+		(strings.len() as u16).write_le(writer)?;
+		0u16.write_le(writer)?;
+		(textures.len() as u8).write_le(writer)?;
+		(uvsets.len() as u8).write_le(writer)?;
+		(colorsets.len() as u8).write_le(writer)?;
+		(self.shader.inner().unk.len() as u8 * 4).write_le(writer)?;
+		textures.write_le(writer)?;
+		uvsets.write_le(writer)?;
+		colorsets.write_le(writer)?;
+		strings.write_le(writer)?;
+		self.shader.inner().unk.write_le(writer)?;
 		if let Some(rows) = &self.colorset_rows {
 			for row in rows {
-				f16::from_f32(row.diffuse[0]).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.diffuse[1]).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.diffuse[2]).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.specular_strength).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.specular[0]).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.specular[1]).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.specular[2]).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.gloss_strength).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.emissive[0]).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.emissive[1]).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.emissive[2]).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.tile_index as f32 / 64.0).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.tile_repeat_x).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.tile_skew_x).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.tile_skew_y).to_bits().write_to(writer).unwrap();
-				f16::from_f32(row.tile_repeat_y).to_bits().write_to(writer).unwrap();
+				f16::from_f32(row.diffuse[0]).to_bits().write_le(writer)?;
+				f16::from_f32(row.diffuse[1]).to_bits().write_le(writer)?;
+				f16::from_f32(row.diffuse[2]).to_bits().write_le(writer)?;
+				f16::from_f32(row.specular_strength).to_bits().write_le(writer)?;
+				f16::from_f32(row.specular[0]).to_bits().write_le(writer)?;
+				f16::from_f32(row.specular[1]).to_bits().write_le(writer)?;
+				f16::from_f32(row.specular[2]).to_bits().write_le(writer)?;
+				f16::from_f32(row.gloss_strength).to_bits().write_le(writer)?;
+				f16::from_f32(row.emissive[0]).to_bits().write_le(writer)?;
+				f16::from_f32(row.emissive[1]).to_bits().write_le(writer)?;
+				f16::from_f32(row.emissive[2]).to_bits().write_le(writer)?;
+				f16::from_f32(row.tile_index as f32 / 64.0).to_bits().write_le(writer)?;
+				f16::from_f32(row.tile_repeat_x).to_bits().write_le(writer)?;
+				f16::from_f32(row.tile_skew_x).to_bits().write_le(writer)?;
+				f16::from_f32(row.tile_skew_y).to_bits().write_le(writer)?;
+				f16::from_f32(row.tile_repeat_y).to_bits().write_le(writer)?;
 			}
 		}
 		if let Some(rows) = &self.colorsetdye_rows {
@@ -1143,7 +1145,7 @@ impl Mtrl {
 					if row.emisive {0x04} else {0} +
 					if row.gloss {0x08} else {0} +
 					if row.specular_strength {0x10} else {0}
-				).write_to(writer).unwrap();
+				).write_le(writer)?;
 			}
 		}
 		
@@ -1163,19 +1165,21 @@ impl Mtrl {
 			shader_keys.push((typ.clone() as u32, key.val));
 		}
 		
-		((shader_param_values.len() as u16) * 4).write_to(writer).unwrap();
-		(shader_keys.len() as u16).write_to(writer).unwrap();
-		(shader_params.len() as u16).write_to(writer).unwrap();
-		(samplers.len() as u16).write_to(writer).unwrap();
-		self.flags.write_to(writer).unwrap();
-		shader_keys.write_to(writer).unwrap();
-		shader_params.write_to(writer).unwrap();
-		samplers.write_to(writer).unwrap();
-		shader_param_values.write_to(writer).unwrap();
+		((shader_param_values.len() as u16) * 4).write_le(writer)?;
+		(shader_keys.len() as u16).write_le(writer)?;
+		(shader_params.len() as u16).write_le(writer)?;
+		(samplers.len() as u16).write_le(writer)?;
+		self.flags.write_le(writer)?;
+		shader_keys.write_le(writer)?;
+		shader_params.write_le(writer)?;
+		samplers.write_le(writer)?;
+		shader_param_values.write_le(writer)?;
 		
 		// write the size now
-		let len = writer.stream_position().unwrap() as u16;
-		writer.seek(std::io::SeekFrom::Start(4)).unwrap();
-		len.write_to(writer).unwrap();
+		let len = writer.stream_position()? as u16;
+		writer.seek(std::io::SeekFrom::Start(4))?;
+		len.write_le(writer)?;
+		
+		Ok(())
 	}
 }
