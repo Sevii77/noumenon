@@ -172,18 +172,18 @@ impl Tex {
 		});
 	}
 	
-	pub fn slice(&self, miplevel: u16, depth: u16) -> (u16, u16, &[u8]) {
+	pub fn slice(&self, miplevel: u16, depth: u16) -> Option<(u16, u16, &[u8])> {
 		Self::slice_manual(miplevel, depth, &self.header, 32, &self.data)
 	}
 	
-	fn slice_manual<'a>(miplevel: u16, depth: u16, header: &Header, bitcount: u32, data: &'a [u8]) -> (u16, u16, &'a [u8]) {
+	fn slice_manual<'a>(miplevel: u16, depth: u16, header: &Header, bitcount: u32, data: &'a [u8]) -> Option<(u16, u16, &'a [u8])> {
 		let bytecount = bitcount as f32 / 8.0;
 		let factor = 0.5f32.powi(miplevel as i32);
 		let (w, h) = (header.width as f32 * factor, header.height as f32 * factor);
-		if w < 1.0 || h < 1.0 {return (0, 0, &data[0..0])}
+		if w < 1.0 || h < 1.0 {return Some((0, 0, &data[0..0]))}
 		let slicesize = (w * h * bytecount as f32) as usize;
-		let offset = ((header.mip_offsets[miplevel as usize] - 80) as f32 * bytecount / (DFormat::from(header.format).bitcount() as f32 / 8.0)) as usize + slicesize * depth as usize;
-		(w as u16, h as u16, &data[offset..(offset + slicesize)])
+		let offset = ((header.mip_offsets.get(miplevel as usize)? - 80) as f32 * bytecount / (DFormat::from(header.format).bitcount() as f32 / 8.0)) as usize + slicesize * depth as usize;
+		Some((w as u16, h as u16, data.get(offset..(offset + slicesize))?))
 	}
 	
 	pub fn read<T>(reader: &mut T) -> Result<Self, Error>
@@ -202,9 +202,10 @@ impl Tex {
 		
 		for mip in 0..header.mip_levels.max(1) {
 			for depth in 0..header.depths.max(1) {
-				let (w, h, data) = Self::slice_manual(mip, depth, &header, bitcount, &data);
-				if w == 0 {break}
-				decompressed.extend(format.convert_from(w as usize, h as usize, data).ok_or("invalid format")?);
+				if let Some((w, h, data)) = Self::slice_manual(mip, depth, &header, bitcount, &data) {
+					if w == 0 {break}
+					decompressed.extend(format.convert_from(w as usize, h as usize, data).ok_or("invalid format")?);
+				}
 			}
 		}
 		
