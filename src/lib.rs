@@ -1,6 +1,60 @@
-use std::ops::{Deref, DerefMut};
+use std::{ops::{Deref, DerefMut}, path::{Path, PathBuf}};
 
-pub mod formats;
+pub mod format;
+
+// ----------
+
+// this docs doesnt autogenerate based on supported types and extensions (is that even possible?)
+/// Convert between external/game formats
+/// 
+/// Mtrl
+/// - mtrl
+/// 
+/// Tex
+/// - tex / atex
+/// - dds
+/// - png
+/// - tiff
+pub enum Convert {
+	// Mdl,
+	Mtrl(format::game::Mtrl),
+	Tex(format::game::Tex),
+	// Uld,
+}
+
+impl Convert {
+	pub fn from_ext<R>(ext: &str, reader: &mut R) -> Result<Self, Error> where
+	R: std::io::Read + std::io::Seek {
+		if format::game::mtrl::EXT.contains(&ext) {return Ok(Self::Mtrl(format::game::Mtrl::read(reader)?))}
+		
+		if format::game::tex::EXT.contains(&ext) {return Ok(Self::Tex(format::game::Tex::read(reader)?))}
+		if format::external::dds::EXT.contains(&ext) {return Ok(Self::Tex(<format::game::Tex as format::external::Dds>::read(reader)?))}
+		if format::external::png::EXT.contains(&ext) {return Ok(Self::Tex(<format::game::Tex as format::external::Png>::read(reader)?))}
+		if format::external::tiff::EXT.contains(&ext) {return Ok(Self::Tex(<format::game::Tex as format::external::Tiff>::read(reader)?))}
+		
+		Err(Error::InvalidFormatFrom(ext.to_string()))
+	}
+	
+	pub fn convert<W>(&self, ext: &str, writer: &mut W) -> Result<(), Error> where
+	W: std::io::Write + std::io::Seek {
+		match self {
+			Convert::Mtrl(v) => {
+				if format::game::mtrl::EXT.contains(&ext) {return format::game::Mtrl::write(v, writer)}
+				
+				Err(Error::InvalidFormatTo(ext.to_string()))
+			}
+			
+			Convert::Tex(v) => {
+				if format::game::tex::EXT.contains(&ext) {return format::game::Tex::write(v, writer)}
+				if format::external::dds::EXT.contains(&ext) {return <format::game::Tex as format::external::Dds>::write(v, writer)}
+				if format::external::png::EXT.contains(&ext) {return <format::game::Tex as format::external::Png>::write(v, writer)}
+				if format::external::tiff::EXT.contains(&ext) {return <format::game::Tex as format::external::Tiff>::write(v, writer)}
+				
+				Err(Error::InvalidFormatTo(ext.to_string()))
+			}
+		}
+	}
+}
 
 // ----------
 
@@ -28,6 +82,8 @@ impl NullWriter for String {
 		Ok(vec)
 	}
 }
+
+// ----------
 
 #[derive(Copy, Eq, PartialEq, Clone, Debug)]
 pub struct SizeError {
@@ -58,6 +114,8 @@ pub enum Error {
 	Image(image::ImageError),
 	Size(SizeError),
 	Utf8(std::str::Utf8Error),
+	InvalidFormatFrom(String),
+	InvalidFormatTo(String),
 }
 
 impl std::fmt::Display for Error {
@@ -69,6 +127,8 @@ impl std::fmt::Display for Error {
 			Self::Image(err) => write!(f, "{:?}", err),
 			Self::Size(err) => write!(f, "{:?}", err),
 			Self::Utf8(err) => write!(f, "{:?}", err),
+			Self::InvalidFormatFrom(ext) => write!(f, "Invalid format to convert from {:?}", ext),
+			Self::InvalidFormatTo(ext) => write!(f, "Invalid format to convert to {:?}", ext),
 		}
 	}
 }
@@ -76,12 +136,12 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {
 	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
 		match self {
-			Self::Str(_err) => None,
 			Self::Io(err) => err.source(),
 			Self::Binrw(err) => err.source(),
 			Self::Image(err) => err.source(),
 			Self::Size(err) => err.source(),
 			Self::Utf8(err) => err.source(),
+			_ => None,
 		}
 	}
 }
@@ -141,8 +201,33 @@ impl DerefMut for Noumenon {
 	}
 }
 
-pub fn get_noumenon() -> Noumenon {
-	Noumenon(ironworks::Ironworks::new()
-		// .with_resource(ironworks::sqpack::SqPack::new(ironworks::ffxiv::FsResource::at(std::env::current_exe().unwrap().parent().unwrap().parent().unwrap()))))
-		.with_resource(ironworks::sqpack::SqPack::new(ironworks::ffxiv::FsResource::at(std::path::Path::new("D:/SteamLibrary/steamapps/common/FINAL FANTASY XIV Online")))))
+// use this for plugin
+// std::env::current_exe().unwrap().parent().unwrap().parent().unwrap()
+pub fn get_noumenon<P>(gamepath: Option<P>) -> Option<Noumenon> where
+P: AsRef<Path> {
+	if let Some(gamepath) = gamepath {
+		if gamepath.as_ref().exists() && gamepath.as_ref().join("game").exists() {
+			return Some(Noumenon(ironworks::Ironworks::new()
+				.with_resource(ironworks::sqpack::SqPack::new(ironworks::ffxiv::FsResource::at(gamepath.as_ref())))));
+		}
+	} else {
+		// super basic windows autodetect
+		for drive_letter in 'A'..'Z' {
+			for path in [":/SquareEnix/FINAL FANTASY XIV - A Realm Reborn",
+			":/Program Files (x86)/FINAL FANTASY XIV - A Realm Reborn",
+			":/Program Files (x86)/SquareEnix/FINAL FANTASY XIV - A Realm Reborn",
+			":/Program Files (x86)/Steam/steamapps/common/FINAL FANTASY XIV Online",
+			":/Program Files (x86)/Steam/steamapps/common/FINAL FANTASY XIV - A Realm Reborn",
+			":/SteamLibrary/steamapps/common/FINAL FANTASY XIV Online",
+			":/SteamLibrary/steamapps/common/FINAL FANTASY XIV - A Realm Reborn"] {
+				let try_path = PathBuf::from(format!("{drive_letter}{path}"));
+				if try_path.exists() {
+					return Some(Noumenon(ironworks::Ironworks::new()
+						.with_resource(ironworks::sqpack::SqPack::new(ironworks::ffxiv::FsResource::at(try_path.as_ref())))));
+				}
+			}
+		}
+	}
+	
+	None
 }

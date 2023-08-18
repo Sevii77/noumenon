@@ -3,7 +3,9 @@
 use std::{io::{Cursor, Read, Seek, Write, SeekFrom, BufReader}, borrow::Cow};
 use binrw::{BinRead, BinReaderExt, BinWrite, binrw};
 use image::{codecs::{png::PngEncoder, tiff::TiffEncoder}, ImageEncoder, ColorType};
-use crate::{Error, formats::external::{dds::{Dds, Format as DFormat}, png::Png, tiff::Tiff}};
+use crate::{Error, format::external::{dds::{Dds, Format as DFormat}, png::Png, tiff::Tiff}};
+
+pub const EXT: &'static [&'static str] = &["tex", "atex"];
 
 #[repr(C)]
 pub struct Pixel {

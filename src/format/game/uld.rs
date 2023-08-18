@@ -4,6 +4,8 @@ use binrw::binrw;
 use modular_bitfield::bitfield;
 use crate::{NullReader, NullWriter};
 
+pub const EXT: &'static [&'static str] = &["uld"];
+
 #[binrw]
 #[brw(little)]
 #[derive(Debug)]

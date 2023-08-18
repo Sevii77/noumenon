@@ -3,7 +3,9 @@
 use std::{borrow::Cow, io::{Cursor, Read, Seek, Write}, collections::BTreeMap};
 use binrw::{binrw, BinRead, BinWrite};
 use half::f16;
-use crate::{Error, NullReader, formats::game::Result};
+use crate::{Error, NullReader, format::game::Result};
+
+pub const EXT: &'static [&'static str] = &["mtrl"];
 
 #[derive(Clone, Debug)]
 pub struct ShaderParams {

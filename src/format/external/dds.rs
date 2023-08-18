@@ -4,6 +4,8 @@ use std::io::{Read, Seek, Write, SeekFrom};
 use binrw::BinReaderExt;
 use squish::Format as SFormat;
 
+pub const EXT: &'static [&'static str] = &["dds"];
+
 pub trait Dds {
 	fn read<T>(reader: &mut T) -> Result<Self, crate::Error> where Self: Sized, T: Read + Seek;
 	fn write<T>(&self, writer: &mut T) -> Result<(), crate::Error> where T: Write + Seek;
