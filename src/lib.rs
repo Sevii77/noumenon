@@ -1,4 +1,5 @@
 use std::{ops::{Deref, DerefMut}, path::{Path, PathBuf}};
+pub use ironworks::file::File;
 
 pub mod format;
 
@@ -10,6 +11,9 @@ pub mod format;
 /// Mtrl
 /// - mtrl
 /// 
+/// Uld
+/// - uld
+/// 
 /// Tex
 /// - tex / atex
 /// - dds
@@ -19,7 +23,7 @@ pub enum Convert {
 	// Mdl,
 	Mtrl(format::game::Mtrl),
 	Tex(format::game::Tex),
-	// Uld,
+	Uld(format::game::Uld),
 }
 
 impl Convert {
@@ -31,6 +35,8 @@ impl Convert {
 		if format::external::dds::EXT.contains(&ext) {return Ok(Self::Tex(<format::game::Tex as format::external::Dds>::read(reader)?))}
 		if format::external::png::EXT.contains(&ext) {return Ok(Self::Tex(<format::game::Tex as format::external::Png>::read(reader)?))}
 		if format::external::tiff::EXT.contains(&ext) {return Ok(Self::Tex(<format::game::Tex as format::external::Tiff>::read(reader)?))}
+		
+		if format::game::uld::EXT.contains(&ext) {return Ok(Self::Uld(format::game::Uld::read(reader)?))}
 		
 		Err(Error::InvalidFormatFrom(ext.to_string()))
 	}
@@ -49,6 +55,12 @@ impl Convert {
 				if format::external::dds::EXT.contains(&ext) {return <format::game::Tex as format::external::Dds>::write(v, writer)}
 				if format::external::png::EXT.contains(&ext) {return <format::game::Tex as format::external::Png>::write(v, writer)}
 				if format::external::tiff::EXT.contains(&ext) {return <format::game::Tex as format::external::Tiff>::write(v, writer)}
+				
+				Err(Error::InvalidFormatTo(ext.to_string()))
+			}
+			
+			Convert::Uld(v) => {
+				if format::game::uld::EXT.contains(&ext) {return format::game::Uld::write(v, writer)}
 				
 				Err(Error::InvalidFormatTo(ext.to_string()))
 			}
@@ -184,8 +196,21 @@ impl From<std::str::Utf8Error> for Error {
 
 // ----------
 
-// TODO: own game data reader, drop iromworks as it is barely used
+struct VoidReader;
+impl ironworks::file::File for VoidReader {
+	fn read<'a>(_data: impl Into<std::borrow::Cow<'a, [u8]>>) -> format::game::Result<Self> {
+		Ok(VoidReader)
+	}
+}
+
+// TODO: own game data reader, drop ironworks as it is barely used
 pub struct Noumenon(ironworks::Ironworks);
+
+impl Noumenon {
+	pub fn exists(&self, path: &str) -> bool {
+		self.file::<VoidReader>(path).is_ok()
+	}
+}
 
 impl Deref for Noumenon {
 	type Target = ironworks::Ironworks;

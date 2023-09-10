@@ -18,9 +18,12 @@ pub mod external {
 pub mod game {
 	pub type Result<T, E = ironworks::Error> = std::result::Result<T, E>;
 	
+	// pub mod mdl;
+	// pub use mdl::Mdl;
 	pub mod tex;
 	pub use tex::Tex;
 	pub mod mtrl;
 	pub use mtrl::Mtrl;
-	// pub mod uld;
+	pub mod uld;
+	pub use uld::Uld;
 }
