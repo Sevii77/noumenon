@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
-use std::{io::{Cursor, Read, Seek, Write, SeekFrom, BufReader}, borrow::Cow};
+use std::{io::{Read, Seek, Write, SeekFrom, BufReader}, borrow::Cow};
 use binrw::{BinRead, BinReaderExt, BinWrite, binrw};
-use image::{codecs::{png::PngEncoder, tiff::TiffEncoder}, ImageEncoder, ColorType};
-use crate::{Error, format::external::{dds::{Dds, Format as DFormat}, png::Png, tiff::Tiff}};
+use image::{codecs::{png::PngEncoder, tiff::TiffEncoder, tga::TgaEncoder}, ImageEncoder, ColorType};
+use crate::{Error, format::external::{dds::{Dds, Format as DFormat}, png::Png, tiff::Tiff, tga::Tga}};
 
 pub const EXT: &'static [&'static str] = &["tex", "atex"];
 
@@ -119,7 +119,7 @@ impl std::panic::UnwindSafe for Tex {}
 // used to load from spack using ironworks
 impl ironworks::file::File for Tex {
 	fn read<'a>(data: impl Into<Cow<'a, [u8]>>) -> super::Result<Self> {
-		Ok(Tex::read(&mut Cursor::new(&data.into())).unwrap())
+		Tex::read(&mut std::io::Cursor::new(&data.into())).map_err(|e| ironworks::Error::Resource(e.into()))
 	}
 }
 
@@ -387,4 +387,39 @@ impl Tiff for Tex {
 		
 		Ok(())
 	}
+}
+
+impl Tga for Tex {
+    fn read<T>(reader: &mut T) -> Result<Self, Error> where 
+	T: Read + Seek {
+		let img = image::io::Reader::with_format(BufReader::new(reader), image::ImageFormat::Tga)
+			.decode()?;
+		
+		Ok(Tex {
+			header: Header {
+				flags: 0x00800000,
+				format: Format::A8R8G8B8,
+				width: img.width() as u16,
+				height: img.height() as u16,
+				depths: 0,
+				mip_levels: 1,
+				lod_offsets: [0, 1, 2],
+				mip_offsets: [80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+			},
+			data: img.into_rgba8().into_vec(),
+		})
+    }
+
+    fn write<T>(&self, writer: &mut T) -> Result<(), Error> where
+	T: Write + Seek {
+		let img = TgaEncoder::new(writer);
+		img.write_image(
+			&self.data[0..(self.header.width as usize * self.header.height as usize * 4)],
+			self.header.width as u32,
+			self.header.height as u32,
+			ColorType::Rgba8
+		)?;
+		
+		Ok(())
+    }
 }
